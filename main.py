@@ -84,6 +84,10 @@ class AnalyzeRequest(BaseModel):
     translation: str = ""
 
 
+class AnalyzeSentenceRequest(BaseModel):
+    sentences: list[str]
+
+
 class MorphologyResponse(BaseModel):
     word: str
     lemma: str
@@ -363,6 +367,64 @@ async def analyze_word(request: AnalyzeRequest):
     )
 
 
+@app.post("/analyze-sentence")
+async def analyze_sentence(request: AnalyzeSentenceRequest):
+    """
+    Analyze a batch of Italian sentences using spaCy.
+
+    Accepts up to 20 sentences (max 500 chars each). For each sentence,
+    runs the spaCy pipeline and returns per-token linguistic data including
+    POS tags, lemmas, morphological features, and dependency labels.
+
+    Returns:
+        A dict with "results" — a list of token lists, one per input sentence.
+    """
+    if nlp is None:
+        raise HTTPException(
+            status_code=503,
+            detail="spaCy Italian model not loaded. Run: python -m spacy download it_core_news_lg"
+        )
+
+    # --- Validation ---
+    if not request.sentences:
+        raise HTTPException(status_code=400, detail="sentences array must not be empty")
+
+    if len(request.sentences) > 20:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Too many sentences ({len(request.sentences)}). Maximum is 20 per request."
+        )
+
+    for idx, sentence in enumerate(request.sentences):
+        if len(sentence) > 500:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Sentence at index {idx} exceeds maximum length of 500 characters ({len(sentence)} chars)."
+            )
+
+    # --- Processing ---
+    results: list[list[dict]] = []
+
+    for sentence in request.sentences:
+        doc = nlp(sentence)
+        tokens = []
+        for token in doc:
+            tokens.append({
+                "text": token.text,
+                "pos": token.pos_,
+                "lemma": token.lemma_,
+                "morph": token.morph.to_dict(),
+                "dep": token.dep_,
+                "is_punct": token.is_punct,
+                "is_space": token.is_space,
+                "start_char": token.idx,
+                "end_char": token.idx + len(token.text),
+            })
+        results.append(tokens)
+
+    return {"results": results}
+
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
@@ -383,6 +445,7 @@ async def root():
         "version": "1.0.0",
         "endpoints": {
             "/analyze": "POST - Analyze word morphology",
+            "/analyze-sentence": "POST - Analyze batch of sentences (token-level POS, lemma, morph, dep)",
             "/health": "GET - Health check"
         }
     }
